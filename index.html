@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Rusche TEWE</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
   :root { color-scheme: light dark; --bg:#fff; --tx:#17202a; --sec:#f3f6f4; --bt:#1f7a4d; --btx:#fff; --line:#d5ddd8; }
   html, body { margin:0; background:var(--bg); color:var(--tx); font:16px/1.35 system-ui, sans-serif; }
@@ -48,6 +49,15 @@
     return "";
   }
   function parse(text) {
+    if (text.indexOf("v1a|") === 0) {
+      var stalls = [];
+      text.slice(4).split("~").forEach(function (block) {
+        if (block.indexOf("Haus|") !== 0 && block.indexOf("Moor|") !== 0) return;
+        var one = parse("v1|" + block);
+        if (one.art === "stall") stalls.push(one);
+      });
+      return { art: "alle", stalls: stalls, current: -1 };
+    }
     if (text.indexOf("v1s|") === 0) {
       var stalls = [];
       text.slice(4).split(";").forEach(function (part) {
@@ -110,25 +120,43 @@
   function render() {
     var app = document.getElementById("app");
     app.innerHTML = "";
-    if (state.art === "stalls") {
+    if (state.art === "alle" && state.current < 0) {
       document.getElementById("title").textContent = "Stall wählen";
-      state.stalls.forEach(function (s) {
+      document.getElementById("sub").textContent = "Tippen zeigt die Ventile.";
+      state.stalls.forEach(function (s, index) {
         var b = document.createElement("button");
         b.textContent = s.stall;
-        b.onclick = function () { send({ aktion: "stall", standort: s.standort, stall: s.stall }); };
+        b.onclick = function () { state.current = index; picked = {}; render(); };
         app.appendChild(b);
       });
       return;
     }
-    if (state.art !== "stall") {
+    if (state.art === "stalls") {
+      document.getElementById("title").textContent = "Stall wählen";
+      document.getElementById("sub").textContent = "Dieser Knopf hat keinen Ventilstand. Bitte den neuen Knopf TEWE öffnen.";
+      state.stalls.forEach(function (s) {
+        var b = document.createElement("button");
+        b.textContent = s.stall;
+        app.appendChild(b);
+      });
+      return;
+    }
+    var view = state.art === "alle" ? state.stalls[state.current] : state;
+    if (!view || view.art !== "stall") {
       document.getElementById("title").textContent = "Kein Stand";
       document.getElementById("sub").textContent = "Im Chat /start senden, dann TEWE öffnen.";
       return;
     }
-    document.getElementById("title").textContent = state.stall;
-    document.getElementById("sub").textContent = state.standort + " · Haken, dann eine Aktion für alle";
-    state.valves.forEach(function (v) {
-      if (state.standort === "Moor" && v.nr >= 270 && v.nr <= 290) return;
+    document.getElementById("title").textContent = view.stall;
+    document.getElementById("sub").textContent = view.standort + " · Haken, dann eine Aktion für alle";
+    if (state.art === "alle") {
+      var back = document.createElement("button");
+      back.textContent = "Andere Ställe";
+      back.onclick = function () { state.current = -1; picked = {}; render(); };
+      app.appendChild(back);
+    }
+    view.valves.forEach(function (v) {
+      if (view.standort === "Moor" && v.nr >= 270 && v.nr <= 290) return;
       var row = document.createElement("label");
       row.className = "valve";
       var box = document.createElement("input");
@@ -162,11 +190,11 @@
         app.appendChild(choice("Ursache", ["Kümmerer", "Mastarm", "Lunge", "Anderes"], ursache, function (n) { ursache = n; }));
       }
     }
-    if (state.jobs && state.jobs.length) {
+    if (view.jobs && view.jobs.length) {
       var h = document.createElement("h1");
       h.textContent = "Freigaben";
       app.appendChild(h);
-      state.jobs.forEach(function (job) {
+      view.jobs.forEach(function (job) {
         var line = document.createElement("div");
         line.className = "muted";
         line.textContent = "#" + job.id + " " + job.typ + " " + job.status;
@@ -185,7 +213,7 @@
     ok.textContent = "In den Chat zur Bestätigung";
     ok.onclick = function () {
       var ventile = Object.keys(picked).filter(function (k) { return picked[k]; }).map(Number);
-      var body = { aktion: "buchen", typ: typ, standort: state.standort, stall: state.stall, ventile: ventile };
+      var body = { aktion: "buchen", typ: typ, standort: view.standort, stall: view.stall, ventile: ventile };
       if (typ === "FUTTER") { body.delta = delta; body.tage = tage; body.sperren = 0; }
       if (typ === "SPERREN") { body.sperren = sperren; body.delta = 0; }
       if (typ === "VERLUST" || typ === "VERKAUF") body.anzahl = anzahl;
