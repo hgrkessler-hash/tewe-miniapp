@@ -119,8 +119,132 @@
   }
   function send(obj) {
     var raw = JSON.stringify(obj);
-    if (tg && tg.sendData) tg.sendData(raw);
-    else document.getElementById("sub").textContent = "Nur in Telegram.";
+    var code = packChat(obj);
+    var name = botName();
+    var qid = queryId();
+    if (code && name && code.length <= 64 && tg && tg.openTelegramLink) {
+      document.getElementById("sub").textContent = "Im Chat kommt Bestätigen. Die App kann zu.";
+      tg.openTelegramLink("https://t.me/" + name + "?start=" + code);
+      return;
+    }
+    if (!qid && tg && tg.sendData) {
+      tg.sendData(raw);
+      return;
+    }
+    if (code && code.length <= 256 && tg && tg.switchInlineQuery) {
+      document.getElementById("sub").textContent = "Im Chat den Vorschlag antippen. Danach Bestätigen.";
+      tg.switchInlineQuery(code);
+      return;
+    }
+    document.getElementById("sub").textContent = "Bitte den Tastaturknopf TEWE öffnen unter der letzten Nachricht verwenden.";
+  }
+  function botName() {
+    var name = param("b");
+    return /^[A-Za-z0-9_]{4,32}$/.test(name) ? name : "";
+  }
+  function param(name) {
+    var q = location.search.charAt(0) === "?" ? location.search.slice(1) : location.search;
+    var parts = q.split("&");
+    for (var i = 0; i < parts.length; i++) {
+      var bits = parts[i].split("=");
+      var key = "";
+      try { key = decodeURIComponent(bits[0] || ""); } catch (e) { key = bits[0] || ""; }
+      if (key === name) {
+        try { return decodeURIComponent((bits.slice(1).join("=")) || ""); } catch (e2) { return ""; }
+      }
+    }
+    return "";
+  }
+  function queryId() {
+    if (!tg) return "";
+    var uns = tg.initDataUnsafe || {};
+    if (uns.query_id) return String(uns.query_id);
+    var raw = String(tg.initData || "");
+    var parts = raw.split("&");
+    for (var i = 0; i < parts.length; i++) {
+      if (parts[i].indexOf("query_id=") === 0) {
+        try { return decodeURIComponent(parts[i].slice(9)); } catch (e) { return ""; }
+      }
+    }
+    return "";
+  }
+  function packChat(obj) {
+    try {
+      var body = packBody(obj);
+      if (!body) return "";
+      return "TW" + b32([1].concat(body));
+    } catch (e) {
+      return "";
+    }
+  }
+  function packBody(obj) {
+    var aktion = obj.aktion || "buchen";
+    if (aktion === "stall") return packStall(2, obj.standort, obj.stall);
+    if (aktion === "freigabe") {
+      var id = Number(obj.id);
+      if (!isFinite(id) || id < 1 || id > 0xffffffff) return null;
+      var tun = obj.tun === "senden" ? 1 : (obj.tun === "abbrechen" ? 0 : -1);
+      if (tun < 0) return null;
+      id = id >>> 0;
+      return [3, (id >>> 24) & 255, (id >>> 16) & 255, (id >>> 8) & 255, id & 255, tun];
+    }
+    if (aktion !== "buchen") return null;
+    var kopf = packStall(1, obj.standort, obj.stall);
+    if (!kopf) return null;
+    var futter = obj.zeilen || [];
+    var sperren = obj.sperren_zeilen || [];
+    if (!futter.length && !sperren.length) return null;
+    if (futter.length > 40 || sperren.length > 40) return null;
+    var out = kopf.concat([futter.length]);
+    for (var i = 0; i < futter.length; i++) {
+      var row = futter[i] || {};
+      var nr = Number(row.ventil);
+      var delta = Number(row.delta_korrektur);
+      var tage = Number(row.ruecknahme_tage);
+      if (!isFinite(nr) || nr < 1 || nr > 65535) return null;
+      if (!isFinite(delta) || delta < -50 || delta > 50 || delta === 0) return null;
+      if ([1, 3, 5, 7].indexOf(tage) < 0) return null;
+      out.push((nr >> 8) & 255, nr & 255, delta & 255, tage & 255);
+    }
+    out.push(sperren.length);
+    for (var j = 0; j < sperren.length; j++) {
+      var sp = sperren[j] || {};
+      var snr = Number(sp.ventil);
+      var stufe = Number(sp.sperren);
+      if (!isFinite(snr) || snr < 1 || snr > 65535) return null;
+      if (stufe !== 1 && stufe !== 2) return null;
+      out.push((snr >> 8) & 255, snr & 255, stufe);
+    }
+    return out;
+  }
+  function packStall(kind, standort, stall) {
+    var ort = standort === "Haus" ? 0 : (standort === "Moor" ? 1 : -1);
+    if (ort < 0 || !stall) return null;
+    var text = utf8(String(stall));
+    if (!text || text.length > 80) return null;
+    return [kind, ort, text.length].concat(text);
+  }
+  function utf8(s) {
+    if (typeof TextEncoder === "function") return Array.prototype.slice.call(new TextEncoder().encode(s));
+    var bin = unescape(encodeURIComponent(s));
+    var alt = [];
+    for (var i = 0; i < bin.length; i++) alt.push(bin.charCodeAt(i));
+    return alt;
+  }
+  var A32 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+  function b32(bytes) {
+    var out = "", val = 0, bits = 0;
+    for (var i = 0; i < bytes.length; i++) {
+      val = (val << 8) | bytes[i];
+      bits += 8;
+      while (bits >= 5) {
+        bits -= 5;
+        out += A32.charAt((val >> bits) & 31);
+      }
+      val &= bits ? ((1 << bits) - 1) : 0;
+    }
+    if (bits > 0) out += A32.charAt((val << (5 - bits)) & 31);
+    return out;
   }
   function inflateZ(value) {
     if (!value || value.indexOf("z:") !== 0 || typeof DecompressionStream !== "function") {
