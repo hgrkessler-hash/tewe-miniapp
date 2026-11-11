@@ -128,7 +128,7 @@
       return;
     }
     if (!qid && tg && tg.sendData) {
-      tg.sendData(raw);
+      tg.sendData(code || raw);
       return;
     }
     if (code && code.length <= 256 && tg && tg.switchInlineQuery) {
@@ -172,10 +172,53 @@
     try {
       var body = packBody(obj);
       if (!body) return "";
-      return "TW" + b32([1].concat(body));
+      var code = "TW" + b32([1].concat(body));
+      if (code.length <= 64) return code;
+      var kurz = packBereiche(obj);
+      if (kurz) {
+        var klein = "TW" + b32(kurz);
+        if (klein.length <= 64) return klein;
+      }
+      return code;
     } catch (e) {
       return "";
     }
+  }
+  function bloecke(rows, keyFn) {
+    var list = (rows || []).slice().sort(function (a, b) { return Number(a.ventil) - Number(b.ventil); });
+    var out = [];
+    for (var i = 0; i < list.length; i++) {
+      var nr = Number(list[i].ventil);
+      var key = keyFn(list[i]);
+      var last = out.length ? out[out.length - 1] : null;
+      if (last && last.start + last.count === nr && last.key === key && last.count < 72) last.count += 1;
+      else out.push({ start: nr, count: 1, key: key });
+    }
+    return out;
+  }
+  function packBereiche(obj) {
+    var kopf = packStall(4, obj.standort, obj.stall);
+    if (!kopf) return null;
+    var futter = bloecke(obj.zeilen || [], function (row) {
+      return String(Number(row.delta_korrektur)) + ":" + String(Number(row.ruecknahme_tage));
+    });
+    var sperren = bloecke(obj.sperren_zeilen || [], function (row) { return String(Number(row.sperren)); });
+    var out = [1].concat(kopf).concat([futter.length]);
+    for (var i = 0; i < futter.length; i++) {
+      var bits = futter[i].key.split(":");
+      var delta = Number(bits[0]);
+      var tage = Number(bits[1]);
+      if (futter[i].count < 1 || futter[i].count > 72) return null;
+      if ([1, 3, 5, 7].indexOf(tage) < 0 || !delta || delta < -50 || delta > 50) return null;
+      out.push((futter[i].start >> 8) & 255, futter[i].start & 255, futter[i].count & 255, delta & 255, tage & 255);
+    }
+    out.push(sperren.length);
+    for (var j = 0; j < sperren.length; j++) {
+      var stufe = Number(sperren[j].key);
+      if (sperren[j].count < 1 || sperren[j].count > 72 || (stufe !== 1 && stufe !== 2)) return null;
+      out.push((sperren[j].start >> 8) & 255, sperren[j].start & 255, sperren[j].count & 255, stufe);
+    }
+    return out;
   }
   function packBody(obj) {
     var aktion = obj.aktion || "buchen";
@@ -194,7 +237,7 @@
     var futter = obj.zeilen || [];
     var sperren = obj.sperren_zeilen || [];
     if (!futter.length && !sperren.length) return null;
-    if (futter.length > 40 || sperren.length > 40) return null;
+    if (futter.length > 72 || sperren.length > 72) return null;
     var out = kopf.concat([futter.length]);
     for (var i = 0; i < futter.length; i++) {
       var row = futter[i] || {};
