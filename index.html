@@ -7,15 +7,20 @@
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
   :root { color-scheme: light dark; --bg:#fff; --tx:#17202a; --sec:#f3f6f4; --bt:#1f7a4d; --btx:#fff; --line:#d5ddd8; }
-  html, body { margin:0; background:var(--bg); color:var(--tx); font:16px/1.35 system-ui, sans-serif; }
-  header, main { padding:12px; }
-  h1 { font-size:18px; margin:0 0 8px; }
-  button, .row { border:1px solid var(--line); background:var(--sec); color:var(--tx); border-radius:10px; }
-  button { padding:8px 10px; margin:4px 4px 0 0; }
+  html, body { margin:0; background:var(--bg); color:var(--tx); font:16px/1.3 system-ui, sans-serif; }
+  header, main { padding:10px; }
+  h1 { font-size:18px; margin:0 0 6px; }
+  button { border:1px solid var(--line); background:var(--sec); color:var(--tx); border-radius:10px; padding:8px 10px; margin:3px 3px 0 0; }
   button.on, button.primary { background:var(--bt); color:var(--btx); border-color:var(--bt); }
-  .valve { display:flex; gap:8px; align-items:center; padding:8px; margin:6px 0; }
+  button.warn { background:#f4e4c4; }
+  .chips, .jumps, .days, .vorgabe { display:flex; flex-wrap:wrap; }
+  .row { display:flex; flex-wrap:wrap; gap:4px; align-items:center; border:1px solid var(--line); border-radius:10px; padding:8px; margin:6px 0; background:var(--sec); }
+  .row.changed { border-color:var(--bt); }
+  .nr { min-width:92px; }
+  .nr b { font-size:18px; margin-right:6px; }
+  .mid { min-width:42px; font-weight:700; text-align:center; }
   .muted { opacity:.75; font-size:13px; }
-  input, select { background:var(--bg); color:var(--tx); border:1px solid var(--line); border-radius:8px; padding:8px; }
+  .pm { min-width:44px; font-weight:700; }
 </style>
 </head>
 <body>
@@ -25,6 +30,8 @@
 (function () {
   var tg = window.Telegram && window.Telegram.WebApp;
   if (tg) { tg.ready(); tg.expand(); }
+  var TAGE = [1, 3, 5, 7];
+  var REIHENFOLGE = ["Haus 1", "Haus 2", "Haus 4", "Moor 1+2", "Moor 3+4", "Moor 5", "Moor 6", "Moor 7", "Moor 8"];
   function applyTheme() {
     var t = (tg && tg.themeParams) || {};
     var root = document.documentElement;
@@ -56,17 +63,22 @@
         var one = parse("v1|" + block);
         if (one.art === "stall") stalls.push(one);
       });
-      return { art: "alle", stalls: stalls, current: -1 };
+      stalls.sort(function (a, b) {
+        var ia = REIHENFOLGE.indexOf(a.stall);
+        var ib = REIHENFOLGE.indexOf(b.stall);
+        return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
+      });
+      return { art: "alle", stalls: stalls, current: stalls.length ? 0 : -1 };
     }
     if (text.indexOf("v1s|") === 0) {
-      var stalls = [];
+      var namen = [];
       text.slice(4).split(";").forEach(function (part) {
         var i = part.indexOf(":");
         if (i < 1) return;
         var mark = part.slice(0, i);
-        stalls.push({ standort: mark === "H" ? "Haus" : "Moor", stall: part.slice(i + 1) });
+        namen.push({ standort: mark === "H" ? "Haus" : "Moor", stall: part.slice(i + 1) });
       });
-      return { art: "stalls", stalls: stalls };
+      return { art: "stalls", stalls: namen };
     }
     var bits = text.split("|");
     if (bits[0] !== "v1" || bits.length < 5) return { art: "leer" };
@@ -84,11 +96,26 @@
     });
     return { art: "stall", standort: bits[1], stall: bits[2], valves: valves, jobs: jobs };
   }
+  function kurz(name) {
+    var m = String(name || "").match(/^(Haus|Moor)\s*(.+)$/i);
+    if (!m) return name;
+    return m[1].charAt(0).toUpperCase() + m[2].replace(/\s+/g, "");
+  }
   function vor(minuten) {
     var n = Number(minuten);
-    if (!minuten || !isFinite(n)) return "";
+    if (minuten === "" || !isFinite(n)) return "";
     var h = Math.floor(n / 60), m = n % 60;
     return "vor " + h + " Std. " + m + " Min.";
+  }
+  function prozent(wert) {
+    var text = String(wert || "").trim();
+    if (!text) return "–";
+    if (text.indexOf("%") >= 0) return text;
+    return text.replace(".", ",") + " %";
+  }
+  function zahl(wert) {
+    var n = Number(String(wert || "").replace(",", "."));
+    return isFinite(n) ? n : null;
   }
   function send(obj) {
     var raw = JSON.stringify(obj);
@@ -107,89 +134,143 @@
     var stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("deflate"));
     return new Response(stream).text();
   }
+  function gruppen(valves) {
+    var nrs = valves.map(function (v) { return v.nr; }).sort(function (a, b) { return a - b; });
+    var out = [], chunk = [];
+    nrs.forEach(function (nr) {
+      if (!chunk.length || (nr === chunk[chunk.length - 1] + 1 && chunk.length < 10)) chunk.push(nr);
+      else { out.push(chunk); chunk = [nr]; }
+    });
+    if (chunk.length) out.push(chunk);
+    return out;
+  }
   var state = { art: "leer" };
-  var picked = {};
-  var typ = "FUTTER";
-  var delta = 5;
-  var tage = 5;
-  var sperren = 1;
-  var anzahl = 1;
-  var art = "Tot";
-  var ursache = "Kümmerer";
+  var edits = {};
+  var vorgabe = 5;
+
+  function edit(stall, nr) {
+    if (!edits[stall]) edits[stall] = {};
+    if (!edits[stall][nr]) edits[stall][nr] = { delta: 0, tage: null, sperre: 0 };
+    return edits[stall][nr];
+  }
+  function viewNow() {
+    if (state.art === "alle") return state.stalls[state.current] || null;
+    if (state.art === "stall") return state;
+    return null;
+  }
+  function button(label, on, click) {
+    var b = document.createElement("button");
+    b.type = "button";
+    b.textContent = label;
+    if (on) b.className = "on";
+    b.onclick = click;
+    return b;
+  }
 
   function render() {
     var app = document.getElementById("app");
     app.innerHTML = "";
-    if (state.art === "alle" && state.current < 0) {
-      document.getElementById("title").textContent = "Stall wählen";
-      document.getElementById("sub").textContent = "Tippen zeigt die Ventile.";
-      state.stalls.forEach(function (s, index) {
-        var b = document.createElement("button");
-        b.textContent = s.stall;
-        b.onclick = function () { state.current = index; picked = {}; render(); };
-        app.appendChild(b);
-      });
-      return;
-    }
     if (state.art === "stalls") {
       document.getElementById("title").textContent = "Stall wählen";
       document.getElementById("sub").textContent = "Dieser Knopf hat keinen Ventilstand. Bitte den neuen Knopf TEWE öffnen.";
-      state.stalls.forEach(function (s) {
-        var b = document.createElement("button");
-        b.textContent = s.stall;
-        app.appendChild(b);
-      });
+      state.stalls.forEach(function (s) { app.appendChild(button(kurz(s.stall), false, function () {})); });
       return;
     }
-    var view = state.art === "alle" ? state.stalls[state.current] : state;
+    var view = viewNow();
     if (!view || view.art !== "stall") {
       document.getElementById("title").textContent = "Kein Stand";
       document.getElementById("sub").textContent = "Im Chat /start senden, dann TEWE öffnen.";
       return;
     }
-    document.getElementById("title").textContent = view.stall;
-    document.getElementById("sub").textContent = view.standort + " · Haken, dann eine Aktion für alle";
+    document.getElementById("title").textContent = "Futter " + kurz(view.stall);
+    document.getElementById("sub").textContent = "Delta summiert sich je Ventil. Gesendet wird erst nach Bestätigen im Chat.";
     if (state.art === "alle") {
-      var back = document.createElement("button");
-      back.textContent = "Andere Ställe";
-      back.onclick = function () { state.current = -1; picked = {}; render(); };
-      app.appendChild(back);
+      var chips = document.createElement("div");
+      chips.className = "chips";
+      state.stalls.forEach(function (s, index) {
+        chips.appendChild(button(kurz(s.stall), index === state.current, function () {
+          state.current = index;
+          render();
+        }));
+      });
+      app.appendChild(chips);
     }
+    var vorg = document.createElement("div");
+    vorg.className = "vorgabe";
+    var cap = document.createElement("span");
+    cap.className = "muted";
+    cap.textContent = "Rücknahme für alle ";
+    vorg.appendChild(cap);
+    TAGE.forEach(function (tag) {
+      var b = button(String(tag), tag === vorgabe, function () { vorgabe = tag; render(); });
+      b.setAttribute("data-std", String(tag));
+      vorg.appendChild(b);
+    });
+    app.appendChild(vorg);
+    var jumps = document.createElement("div");
+    jumps.className = "jumps";
+    gruppen(view.valves).forEach(function (chunk) {
+      var a = chunk[0], b = chunk[chunk.length - 1];
+      var label = a === b ? String(a) : a + "–" + b;
+      var btn = button(label, false, function () {
+        var row = document.getElementById("v" + a);
+        if (row) row.scrollIntoView({ block: "start" });
+      });
+      btn.setAttribute("data-jump", String(a));
+      jumps.appendChild(btn);
+    });
+    app.appendChild(jumps);
+    var geaendert = 0;
     view.valves.forEach(function (v) {
       if (view.standort === "Moor" && v.nr >= 270 && v.nr <= 290) return;
-      var row = document.createElement("label");
-      row.className = "valve";
-      var box = document.createElement("input");
-      box.type = "checkbox";
-      box.onchange = function () { picked[v.nr] = box.checked; };
-      row.appendChild(box);
-      var text = document.createElement("div");
-      text.innerHTML = "<b>" + v.nr + "</b> · Tiere " + (v.tiere || "–") + " · Korr. " + (v.korrektur || "–")
-        + "<div class='muted'>" + (vor(v.minuten) || "letzte Fütterung unbekannt") + "</div>";
-      row.appendChild(text);
+      var e = edit(view.stall, v.nr);
+      if (e.delta !== 0 || e.sperre > 0) geaendert += 1;
+      var row = document.createElement("div");
+      row.className = "row" + (e.delta !== 0 || e.sperre > 0 ? " changed" : "");
+      row.id = "v" + v.nr;
+      var nr = document.createElement("div");
+      nr.className = "nr";
+      var seit = vor(v.minuten) || "letzte Fütterung unbekannt";
+      nr.innerHTML = "<b>" + v.nr + "</b><span>" + prozent(v.korrektur) + "</span><div class='muted'>" + seit + "</div>";
+      row.appendChild(nr);
+      var minus = button("−5", false, function () { schritt(view, v, -5); });
+      minus.className = "pm";
+      minus.setAttribute("data-m5", String(v.nr));
+      var plus = button("+5", false, function () { schritt(view, v, 5); });
+      plus.className = "pm";
+      plus.setAttribute("data-p5", String(v.nr));
+      var mid = document.createElement("div");
+      mid.className = "mid";
+      mid.textContent = e.delta ? (e.delta > 0 ? "+" : "") + e.delta : "";
+      row.appendChild(minus);
+      row.appendChild(mid);
+      row.appendChild(plus);
+      var days = document.createElement("div");
+      days.className = "days";
+      var aktiv = e.tage == null ? vorgabe : e.tage;
+      TAGE.forEach(function (tag) {
+        var b = button(String(tag), tag === aktiv, function () {
+          e.tage = tag === vorgabe ? null : tag;
+          render();
+        });
+        if (e.tage != null && tag === e.tage) b.className = "on warn";
+        b.setAttribute("data-tage", v.nr + ":" + tag);
+        days.appendChild(b);
+      });
+      row.appendChild(days);
+      var sperre = button(e.sperre ? "Sperren " + e.sperre : "Sperren", e.sperre > 0, function () {
+        e.sperre = (e.sperre + 1) % 3;
+        render();
+      });
+      sperre.setAttribute("data-sp", String(v.nr));
+      row.appendChild(sperre);
       app.appendChild(row);
     });
-    var actions = document.createElement("div");
-    [["FUTTER", "Futter"], ["SPERREN", "Sperren"], ["VERLUST", "Verlust"], ["VERKAUF", "Verkauf"]].forEach(function (pair) {
-      var b = document.createElement("button");
-      b.textContent = pair[1];
-      b.className = typ === pair[0] ? "on" : "";
-      b.onclick = function () { typ = pair[0]; render(); };
-      actions.appendChild(b);
-    });
-    app.appendChild(actions);
-    if (typ === "FUTTER") {
-      app.appendChild(choice("Delta", [-10, -5, 5, 10], delta, function (n) { delta = n; }));
-      app.appendChild(choice("Rücknahme Tage", [3, 5, 7], tage, function (n) { tage = n; }));
-    } else if (typ === "SPERREN") {
-      app.appendChild(choice("Sperren", [1, 2], sperren, function (n) { sperren = n; }));
-    } else {
-      app.appendChild(choice("Anzahl", [1, 2, 3], anzahl, function (n) { anzahl = n; }));
-      if (typ === "VERLUST") {
-        app.appendChild(choice("Art", ["Tot", "Notgetötet"], art, function (n) { art = n; }));
-        app.appendChild(choice("Ursache", ["Kümmerer", "Mastarm", "Lunge", "Anderes"], ursache, function (n) { ursache = n; }));
-      }
-    }
+    var ok = document.createElement("button");
+    ok.className = "primary";
+    ok.textContent = geaendert ? "In den Chat (" + geaendert + ")" : "Nichts geändert";
+    ok.onclick = function () { absenden(view); };
+    app.appendChild(ok);
     if (view.jobs && view.jobs.length) {
       var h = document.createElement("h1");
       h.textContent = "Freigaben";
@@ -199,43 +280,56 @@
         line.className = "muted";
         line.textContent = "#" + job.id + " " + job.typ + " " + job.status;
         app.appendChild(line);
-        var go = document.createElement("button");
-        go.textContent = "Jetzt senden";
-        go.onclick = function () { send({ aktion: "freigabe", id: job.id, tun: "senden" }); };
-        var stop = document.createElement("button");
-        stop.textContent = "Abbrechen";
-        stop.onclick = function () { send({ aktion: "freigabe", id: job.id, tun: "abbrechen" }); };
-        app.appendChild(go); app.appendChild(stop);
+        app.appendChild(button("Jetzt senden", false, function () {
+          send({ aktion: "freigabe", id: job.id, tun: "senden" });
+        }));
+        app.appendChild(button("Abbrechen", false, function () {
+          send({ aktion: "freigabe", id: job.id, tun: "abbrechen" });
+        }));
       });
     }
-    var ok = document.createElement("button");
-    ok.className = "primary";
-    ok.textContent = "In den Chat zur Bestätigung";
-    ok.onclick = function () {
-      var ventile = Object.keys(picked).filter(function (k) { return picked[k]; }).map(Number);
-      var body = { aktion: "buchen", typ: typ, standort: view.standort, stall: view.stall, ventile: ventile };
-      if (typ === "FUTTER") { body.delta = delta; body.tage = tage; body.sperren = 0; }
-      if (typ === "SPERREN") { body.sperren = sperren; body.delta = 0; }
-      if (typ === "VERLUST" || typ === "VERKAUF") body.anzahl = anzahl;
-      if (typ === "VERLUST") { body.art = art; body.ursache = ursache; body.notiz = ""; }
-      send(body);
-    };
-    app.appendChild(ok);
   }
-  function choice(label, values, current, set) {
-    var box = document.createElement("div");
-    var cap = document.createElement("div");
-    cap.className = "muted";
-    cap.textContent = label;
-    box.appendChild(cap);
-    values.forEach(function (value) {
-      var b = document.createElement("button");
-      b.textContent = String(value);
-      if (value === current) b.className = "on";
-      b.onclick = function () { set(value); render(); };
-      box.appendChild(b);
+  function schritt(view, ventil, step) {
+    var e = edit(view.stall, ventil.nr);
+    var basis = zahl(ventil.korrektur);
+    var next = e.delta + step;
+    if (next > 50) next = 50;
+    if (next < -50) next = -50;
+    if (basis != null && basis + next < 0) next = -Math.floor(basis);
+    e.delta = next;
+    render();
+  }
+  function absenden(view) {
+    var zeilen = [];
+    var sperren = [];
+    view.valves.forEach(function (v) {
+      var e = (edits[view.stall] || {})[v.nr];
+      if (!e) return;
+      if (e.delta) {
+        var row = {
+          ventil: v.nr,
+          delta_korrektur: e.delta,
+          ruecknahme_tage: e.tage == null ? vorgabe : e.tage,
+          sperren: 0
+        };
+        var alt = zahl(v.korrektur);
+        if (alt != null) row.korrektur_alt = alt;
+        zeilen.push(row);
+      }
+      if (e.sperre > 0) sperren.push({ ventil: v.nr, sperren: e.sperre });
     });
-    return box;
+    if (!zeilen.length && !sperren.length) {
+      document.getElementById("sub").textContent = "Nichts geändert.";
+      return;
+    }
+    send({
+      aktion: "buchen",
+      typ: zeilen.length ? "FUTTER" : "SPERREN",
+      standort: view.standort,
+      stall: view.stall,
+      zeilen: zeilen,
+      sperren_zeilen: sperren
+    });
   }
   inflateZ(standText()).then(function (text) {
     state = parse(text || "");
