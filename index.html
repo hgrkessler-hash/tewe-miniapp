@@ -172,8 +172,12 @@
     app.innerHTML = "";
     if (state.art === "stalls") {
       document.getElementById("title").textContent = "Stall wählen";
-      document.getElementById("sub").textContent = "Dieser Knopf hat keinen Ventilstand. Bitte den neuen Knopf TEWE öffnen.";
-      state.stalls.forEach(function (s) { app.appendChild(button(kurz(s.stall), false, function () {})); });
+      document.getElementById("sub").textContent = "Tippe den Stall. Im Chat kommt dann der Knopf TEWE öffnen mit dem Ventilstand.";
+      state.stalls.forEach(function (s) {
+        app.appendChild(button(kurz(s.stall), false, function () {
+          send({ aktion: "stall", standort: s.standort, stall: s.stall });
+        }));
+      });
       return;
     }
     var view = viewNow();
